@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 import sqlite3
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
-
+import os
+from pathlib import Path
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,11 +15,15 @@ TIME_IN, TIME_OUT, LUNCH_START, LUNCH_END = range(4)
 
 # Чтение токена из файла
 def get_token():
+    base_dir = Path(__file__).resolve().parent
+    token_file = base_dir / ".token.txt"
+
     try:
-        with open('.token', 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        logger.error("Файл .token не найден! Создайте файл .token с токеном бота.")
+        token = token_file.read_text().strip()
+        logger.debug(f"Токен найден в файле .github_token: {token[:4]}...{token[-4:]}")
+        return token
+    except Exception as e:
+        logger.error(f"Ошибка чтения файла .github_token: {e}")
         return None
 
 
