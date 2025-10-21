@@ -568,6 +568,7 @@ async def add_record_lunch_minutes(update, context):
 
         context.user_data['adding_record']['lunch_minutes'] = lunch_minutes
 
+        # Сохраняем полную запись в базу данных
         return await save_complete_record(update, context)
     except ValueError:
         await update.message.reply_text(
@@ -606,8 +607,10 @@ async def save_complete_record(update, context):
 
     message += f"⏱ Отработано: {total_hours:.2f} часов"
 
+    # Очищаем временные данные
     context.user_data.pop('adding_record', None)
 
+    # Принудительно завершаем разговор
     await update.message.reply_text(message, reply_markup=main_keyboard())
     return ConversationHandler.END
 
@@ -714,17 +717,24 @@ def main():
 
     application = Application.builder().token(token).build()
 
-    # ConversationHandler для входа/выхода
-    time_conv_handler = ConversationHandler(
+    # ConversationHandler для добавления полной записи (ДОЛЖЕН БЫТЬ ПЕРВЫМ - самый специфичный)
+    add_record_conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex('^Вход$'), time_in),
-            MessageHandler(filters.Regex('^Выход$'), time_out)
+            MessageHandler(filters.Regex('^Добавить запись$'), add_record)
         ],
         states={
-            TIME_IN: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_time_in)],
-            TIME_OUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_time_out)]
+            ADD_RECORD_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_date)],
+            ADD_RECORD_TIME_IN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_time_in)],
+            ADD_RECORD_TIME_OUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_time_out)],
+            ADD_RECORD_LUNCH_START: [
+                MessageHandler(filters.Regex('^(Время обеда|Минуты обеда|Пропустить обед)$'), add_record_lunch_type),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_start)
+            ],
+            ADD_RECORD_LUNCH_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_end)],
+            ADD_RECORD_LUNCH_MINUTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_minutes)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
     )
 
     # ConversationHandler для обеда
@@ -742,34 +752,33 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    # ConversationHandler для добавления полной записи
-    add_record_conv_handler = ConversationHandler(
+    # ConversationHandler для входа/выхода
+    time_conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex('^Добавить запись$'), add_record)
+            MessageHandler(filters.Regex('^Вход$'), time_in),
+            MessageHandler(filters.Regex('^Выход$'), time_out)
         ],
         states={
-            ADD_RECORD_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_date)],
-            ADD_RECORD_TIME_IN: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_time_in)],
-            ADD_RECORD_TIME_OUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_time_out)],
-            ADD_RECORD_LUNCH_START: [
-                MessageHandler(filters.Regex('^(Время обеда|Минуты обеда|Пропустить обед)$'), add_record_lunch_type),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_start)
-            ],
-            ADD_RECORD_LUNCH_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_end)],
-            ADD_RECORD_LUNCH_MINUTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_record_lunch_minutes)],
+            TIME_IN: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_time_in)],
+            TIME_OUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_time_out)]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(time_conv_handler)
+    # Порядок ВАЖЕН: сначала самые специфичные обработчики
+    application.add_handler(add_record_conv_handler)  # Первый - самый специфичный
     application.add_handler(lunch_conv_handler)
-    application.add_handler(add_record_conv_handler)
+    application.add_handler(time_conv_handler)
+
+    # Затем общие обработчики
+    application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.Regex('^Обед$'), lunch))
     application.add_handler(MessageHandler(filters.Regex('^Назад$'), lunch_back))
     application.add_handler(MessageHandler(filters.Regex('^Отчет$'), report_menu))
+
+    # Убрал "Назад" из этого обработчика, чтобы не конфликтовал
     application.add_handler(
-        MessageHandler(filters.Regex('^(Сегодня|Неделя|Месяц|Год|Назад)$'), generate_report_handler))
+        MessageHandler(filters.Regex('^(Сегодня|Неделя|Месяц|Год)$'), generate_report_handler))
 
     try:
         application.run_polling()
