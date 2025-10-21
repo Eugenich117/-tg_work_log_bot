@@ -59,24 +59,46 @@ def add_time_out(user_id, date, time_out):
     conn.close()
 
 
-# Генерация отчетов
+# Генерация отчетов за период
 def generate_report(user_id, period):
     conn = sqlite3.connect('timesheet.db')
     cursor = conn.cursor()
 
-    if period == 'week':
+    if period == 'today':
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''SELECT SUM(hours) FROM records 
+                       WHERE user_id=? AND date=?''', (user_id, current_date))
+    elif period == 'week':
         start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        cursor.execute('''SELECT SUM(hours) FROM records 
+                       WHERE user_id=? AND date >= ?''', (user_id, start_date))
     elif period == 'month':
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        cursor.execute('''SELECT SUM(hours) FROM records 
+                       WHERE user_id=? AND date >= ?''', (user_id, start_date))
     else:  # year
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        cursor.execute('''SELECT SUM(hours) FROM records 
+                       WHERE user_id=? AND date >= ?''', (user_id, start_date))
 
-    cursor.execute('''SELECT SUM(hours) FROM records 
-                   WHERE user_id=? AND date >= ?''', (user_id, start_date))
     result = cursor.fetchone()
     conn.close()
 
     return result[0] or 0
+
+
+# Получение деталей за сегодня
+def get_today_details(user_id):
+    conn = sqlite3.connect('timesheet.db')
+    cursor = conn.cursor()
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    cursor.execute('''SELECT time_in, time_out, hours FROM records 
+                   WHERE user_id=? AND date=? ORDER BY time_in''', (user_id, current_date))
+    records = cursor.fetchall()
+    conn.close()
+
+    return records
 
 
 # Команда старт
@@ -149,7 +171,7 @@ def main_keyboard():
 
 # Меню отчетов
 async def report_menu(update, context):
-    keyboard = [['Неделя', 'Месяц', 'Год'], ['Назад']]
+    keyboard = [['Сегодня', 'Неделя', 'Месяц'], ['Год', 'Назад']]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         'Выберите период для отчета:',
@@ -160,14 +182,41 @@ async def report_menu(update, context):
 # Генерация отчета
 async def generate_report_handler(update, context):
     user_id = update.message.from_user.id
-    period = update.message.text.lower()
+    period_text = update.message.text.lower()
 
-    if period in ['неделя', 'месяц', 'год']:
+    if period_text == 'назад':
+        await update.message.reply_text('Главное меню', reply_markup=main_keyboard())
+        return
+
+    period_map = {
+        'сегодня': 'today',
+        'неделя': 'week',
+        'месяц': 'month',
+        'год': 'year'
+    }
+
+    if period_text in period_map:
+        period = period_map[period_text]
         total_hours = generate_report(user_id, period)
-        await update.message.reply_text(
-            f'Отработано за {period}: {total_hours:.2f} часов',
-            reply_markup=main_keyboard()
-        )
+
+        if period == 'today':
+            # Для отчета за сегодня показываем детали
+            details = get_today_details(user_id)
+            if details:
+                message = f"Отчет за сегодня ({datetime.now().strftime('%d.%m.%Y')}):\n\n"
+                for i, record in enumerate(details, 1):
+                    time_in, time_out, hours = record
+                    if time_out and hours:
+                        message += f"{i}. ⏰ {time_in} - {time_out} | {hours:.2f} ч.\n"
+                    else:
+                        message += f"{i}. ⏰ {time_in} - --:-- | незавершенный вход\n"
+                message += f"\nВсего за день: {total_hours:.2f} часов"
+            else:
+                message = "За сегодня нет записей о рабочем времени."
+        else:
+            message = f'Отработано за {period_text}: {total_hours:.2f} часов'
+
+        await update.message.reply_text(message, reply_markup=main_keyboard())
     else:
         await update.message.reply_text('Неверный период отчета')
 
@@ -181,6 +230,7 @@ async def cancel(update, context):
 def main():
     init_db()
 
+    # Замените "YOUR_BOT_TOKEN" на токен вашего бота
     application = Application.builder().token("8412675372:AAHadq57Jw0r2GWl1VkhZwT8xZs9j_GJWpk").build()
 
     conv_handler = ConversationHandler(
@@ -198,7 +248,8 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.Regex('^Отчет$'), report_menu))
-    application.add_handler(MessageHandler(filters.Regex('^(Неделя|Месяц|Год)$'), generate_report_handler))
+    application.add_handler(
+        MessageHandler(filters.Regex('^(Сегодня|Неделя|Месяц|Год|Назад)$'), generate_report_handler))
 
     application.run_polling()
 
