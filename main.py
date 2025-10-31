@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 (
     TIME_IN, TIME_OUT, LUNCH_START, LUNCH_END,
     ADD_RECORD_DATE, ADD_RECORD_TIME_IN, ADD_RECORD_TIME_OUT,
-    ADD_RECORD_LUNCH_START, ADD_RECORD_LUNCH_END, ADD_RECORD_LUNCH_MINUTES
-) = range(10)
+    ADD_RECORD_LUNCH_START, ADD_RECORD_LUNCH_END, ADD_RECORD_LUNCH_MINUTES,
+    CALC_TIME_IN, CALC_TIME_OUT, CALC_LUNCH_MINUTES
+) = range(13)
 
 
 # Чтение токена из файла
@@ -240,7 +241,7 @@ def get_today_details(user_id):
 
 # Команда старт
 async def start(update, context):
-    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет']]
+    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'], ['Расчет рабочего времени']]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         'Выберите действие:',
@@ -250,8 +251,81 @@ async def start(update, context):
 
 # Главное меню
 def main_keyboard():
-    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет']]
+    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'], ['Расчет рабочего времени']]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+# Обработчик кнопки "Расчет рабочего времени"
+async def worktime_calculation(update, context):
+    await update.message.reply_text(
+        'Введите время входа в формате ЧЧ:ММ (например, 09:00):',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return CALC_TIME_IN
+
+
+# Обработчик ввода времени входа для расчета
+async def calc_time_in(update, context):
+    time_in_str = update.message.text
+    try:
+        datetime.strptime(time_in_str, '%H:%M')
+        context.user_data['calc_time_in'] = time_in_str
+        await update.message.reply_text(
+            'Введите время выхода в формате ЧЧ:ММ (например, 18:00):'
+        )
+        return CALC_TIME_OUT
+    except ValueError:
+        await update.message.reply_text('Неверный формат времени! Используйте ЧЧ:ММ (например, 09:00):')
+        return CALC_TIME_IN
+
+
+# Обработчик ввода времени выхода для расчета
+async def calc_time_out(update, context):
+    time_out_str = update.message.text
+    try:
+        datetime.strptime(time_out_str, '%H:%M')
+        context.user_data['calc_time_out'] = time_out_str
+        await update.message.reply_text(
+            'Введите продолжительность обеда в минутах (например, 60):\n'
+            'Если обеда не было, введите 0'
+        )
+        return CALC_LUNCH_MINUTES
+    except ValueError:
+        await update.message.reply_text('Неверный формат времени! Используйте ЧЧ:ММ (например, 18:00):')
+        return CALC_TIME_OUT
+
+
+# Обработчик ввода минут обеда для расчета и вывод результата
+async def calc_lunch_minutes(update, context):
+    lunch_minutes_str = update.message.text
+    try:
+        lunch_minutes = int(lunch_minutes_str)
+        if lunch_minutes < 0:
+            raise ValueError("Отрицательное значение")
+
+        # Получаем сохраненные данные
+        time_in = context.user_data.get('calc_time_in')
+        time_out = context.user_data.get('calc_time_out')
+
+        # Вычисляем рабочее время
+        total_hours = calculate_work_hours(time_in, time_out, lunch_minutes=lunch_minutes)
+
+        # Формируем сообщение с результатом
+        message = f"📊 Результат расчета:\n\n"
+        message += f"⏰ Время входа: {time_in}\n"
+        message += f"⏰ Время выхода: {time_out}\n"
+        message += f"🍽 Обед: {lunch_minutes} минут\n"
+        message += f"⏱ Отработано: {total_hours:.2f} часов"
+
+        # Очищаем временные данные
+        context.user_data.pop('calc_time_in', None)
+        context.user_data.pop('calc_time_out', None)
+
+        await update.message.reply_text(message, reply_markup=main_keyboard())
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text('Неверный формат! Введите целое число минут (например, 60):')
+        return CALC_LUNCH_MINUTES
 
 
 # Обработчик кнопки "Вход"
@@ -717,6 +791,20 @@ def main():
 
     application = Application.builder().token(token).build()
 
+    # ConversationHandler для расчета рабочего времени
+    calc_worktime_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex('^Расчет рабочего времени$'), worktime_calculation)
+        ],
+        states={
+            CALC_TIME_IN: [MessageHandler(filters.TEXT & ~filters.COMMAND, calc_time_in)],
+            CALC_TIME_OUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, calc_time_out)],
+            CALC_LUNCH_MINUTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, calc_lunch_minutes)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
+    )
+
     # ConversationHandler для добавления полной записи (ДОЛЖЕН БЫТЬ ПЕРВЫМ - самый специфичный)
     add_record_conv_handler = ConversationHandler(
         entry_points=[
@@ -766,7 +854,8 @@ def main():
     )
 
     # Порядок ВАЖЕН: сначала самые специфичные обработчики
-    application.add_handler(add_record_conv_handler)  # Первый - самый специфичный
+    application.add_handler(calc_worktime_handler)  # Добавляем новый обработчик расчета
+    application.add_handler(add_record_conv_handler)
     application.add_handler(lunch_conv_handler)
     application.add_handler(time_conv_handler)
 
