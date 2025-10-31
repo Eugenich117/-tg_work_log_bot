@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
     TIME_IN, TIME_OUT, LUNCH_START, LUNCH_END,
     ADD_RECORD_DATE, ADD_RECORD_TIME_IN, ADD_RECORD_TIME_OUT,
     ADD_RECORD_LUNCH_START, ADD_RECORD_LUNCH_END, ADD_RECORD_LUNCH_MINUTES,
-    CALC_TIME_IN, CALC_TIME_OUT, CALC_LUNCH_MINUTES
-) = range(13)
+    CALC_TIME_IN, CALC_TIME_OUT, CALC_LUNCH_MINUTES,
+    DELETE_RECORD_DATE, DELETE_CONFIRM
+) = range(15)
 
 
 # Чтение токена из файла
@@ -93,6 +94,26 @@ def calculate_work_hours(time_in, time_out, lunch_start=None, lunch_end=None, lu
         return max(0, round(total_time, 2))
     except ValueError:
         return 0
+
+
+# Получение записей за определенную дату
+def get_records_by_date(user_id, date):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''SELECT id, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours 
+                   FROM records WHERE user_id=? AND date=? ORDER BY time_in''', (user_id, date))
+    records = cursor.fetchall()
+    return records
+
+
+# Удаление записей за определенную дату
+def delete_records_by_date(user_id, date):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM records WHERE user_id=? AND date=?', (user_id, date))
+    deleted_count = cursor.rowcount
+    conn.commit()
+    return deleted_count
 
 
 # Добавление полной записи
@@ -241,7 +262,8 @@ def get_today_details(user_id):
 
 # Команда старт
 async def start(update, context):
-    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'], ['Расчет рабочего времени']]
+    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'],
+                ['Расчет рабочего времени', 'Коррекция журнала']]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         'Выберите действие:',
@@ -251,8 +273,117 @@ async def start(update, context):
 
 # Главное меню
 def main_keyboard():
-    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'], ['Расчет рабочего времени']]
+    keyboard = [['Вход', 'Выход', 'Обед'], ['Добавить запись', 'Отчет'],
+                ['Расчет рабочего времени', 'Коррекция журнала']]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+# Обработчик кнопки "Коррекция журнала"
+async def journal_correction(update, context):
+    await update.message.reply_text(
+        'Введите дату в формате ДД.ММ.ГГГГ (например, 15.11.2023) для удаления записей:\n'
+        'Или нажмите /cancel для отмены',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return DELETE_RECORD_DATE
+
+
+# Обработчик ввода даты для удаления
+async def delete_record_date(update, context):
+    date_str = update.message.text
+    user_id = update.message.from_user.id
+
+    try:
+        date_obj = datetime.strptime(date_str, '%d.%m.%Y')
+        date_db = date_obj.strftime('%Y-%m-%d')
+
+        # Получаем записи за эту дату
+        records = await asyncio.get_event_loop().run_in_executor(
+            None, get_records_by_date, user_id, date_db
+        )
+
+        if not records:
+            await update.message.reply_text(
+                f'За {date_str} нет записей для удаления.',
+                reply_markup=main_keyboard()
+            )
+            return ConversationHandler.END
+
+        # Сохраняем дату для использования в следующем шаге
+        context.user_data['delete_date'] = date_db
+        context.user_data['delete_date_display'] = date_str
+
+        # Формируем сообщение с найденными записями
+        message = f"Найдены записи за {date_str}:\n\n"
+        total_hours = 0
+
+        for i, record in enumerate(records, 1):
+            record_id, time_in, time_out, lunch_start, lunch_end, lunch_minutes, hours = record
+            message += f"{i}. ⏰ {time_in} - {time_out}"
+            if lunch_start and lunch_end:
+                message += f" | 🍽 {lunch_start}-{lunch_end}"
+            elif lunch_minutes:
+                message += f" | 🍽 {lunch_minutes} мин"
+            if hours:
+                message += f" | ⏱ {hours:.2f} ч.\n"
+                total_hours += hours
+            else:
+                message += " | ⏱ расчет...\n"
+
+        message += f"\n📈 Всего за день: {total_hours:.2f} часов\n\n"
+        message += "Вы уверены, что хотите удалить эти записи? (да/нет)"
+
+        await update.message.reply_text(message)
+        return DELETE_CONFIRM
+
+    except ValueError:
+        await update.message.reply_text(
+            'Неверный формат даты! Используйте ДД.ММ.ГГГГ (например, 15.11.2023):\n'
+            'Или нажмите /cancel для отмены'
+        )
+        return DELETE_RECORD_DATE
+
+
+# Обработчик подтверждения удаления
+async def delete_confirm(update, context):
+    user_id = update.message.from_user.id
+    choice = update.message.text.lower()
+
+    if choice == 'да':
+        date_db = context.user_data['delete_date']
+        date_display = context.user_data['delete_date_display']
+
+        # Удаляем записи
+        deleted_count = await asyncio.get_event_loop().run_in_executor(
+            None, delete_records_by_date, user_id, date_db
+        )
+
+        # Очищаем временные данные
+        context.user_data.pop('delete_date', None)
+        context.user_data.pop('delete_date_display', None)
+
+        await update.message.reply_text(
+            f'✅ Удалено {deleted_count} записей за {date_display}.',
+            reply_markup=main_keyboard()
+        )
+        return ConversationHandler.END
+
+    elif choice == 'нет':
+        # Очищаем временные данные
+        context.user_data.pop('delete_date', None)
+        context.user_data.pop('delete_date_display', None)
+
+        await update.message.reply_text(
+            'Удаление отменено.',
+            reply_markup=main_keyboard()
+        )
+        return ConversationHandler.END
+
+    else:
+        await update.message.reply_text(
+            'Пожалуйста, введите "да" или "нет":'
+        )
+        return DELETE_CONFIRM
 
 
 # Обработчик кнопки "Расчет рабочего времени"
@@ -767,8 +898,12 @@ async def lunch_back(update, context):
 
 # Отмена диалога
 async def cancel(update, context):
-    if 'adding_record' in context.user_data:
-        context.user_data.pop('adding_record', None)
+    # Очищаем все временные данные
+    context.user_data.pop('adding_record', None)
+    context.user_data.pop('delete_date', None)
+    context.user_data.pop('delete_date_display', None)
+    context.user_data.pop('calc_time_in', None)
+    context.user_data.pop('calc_time_out', None)
 
     await update.message.reply_text('Операция отменена', reply_markup=main_keyboard())
     return ConversationHandler.END
@@ -791,6 +926,19 @@ def main():
 
     application = Application.builder().token(token).build()
 
+    # ConversationHandler для коррекции журнала (удаления записей)
+    delete_record_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex('^Коррекция журнала$'), journal_correction)
+        ],
+        states={
+            DELETE_RECORD_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_record_date)],
+            DELETE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_confirm)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
+    )
+
     # ConversationHandler для расчета рабочего времени
     calc_worktime_handler = ConversationHandler(
         entry_points=[
@@ -805,7 +953,7 @@ def main():
         allow_reentry=True
     )
 
-    # ConversationHandler для добавления полной записи (ДОЛЖЕН БЫТЬ ПЕРВЫМ - самый специфичный)
+    # ConversationHandler для добавления полной записи
     add_record_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^Добавить запись$'), add_record)
@@ -854,7 +1002,8 @@ def main():
     )
 
     # Порядок ВАЖЕН: сначала самые специфичные обработчики
-    application.add_handler(calc_worktime_handler)  # Добавляем новый обработчик расчета
+    application.add_handler(delete_record_handler)  # Добавляем обработчик удаления
+    application.add_handler(calc_worktime_handler)
     application.add_handler(add_record_conv_handler)
     application.add_handler(lunch_conv_handler)
     application.add_handler(time_conv_handler)
