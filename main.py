@@ -23,6 +23,35 @@ logger = logging.getLogger(__name__)
 ) = range(15)
 
 
+# Функция для преобразования часов в формате float в строку времени (ЧЧ:ММ)
+def float_hours_to_time_str(hours_float):
+    """Преобразует часы в формате float в строку времени ЧЧ:ММ"""
+    if hours_float is None:
+        return "0:00"
+
+    hours = int(hours_float)
+    minutes = int(round((hours_float - hours) * 60))
+
+    # Обработка случая, когда минуты достигают 60
+    if minutes >= 60:
+        hours += 1
+        minutes = 0
+
+    return f"{hours}:{minutes:02d}"
+
+
+# Функция для преобразования минут в строку времени (ЧЧ:ММ)
+def minutes_to_time_str(total_minutes):
+    """Преобразует минуты в строку времени ЧЧ:ММ"""
+    if total_minutes is None:
+        return "0:00"
+
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+
+    return f"{hours}:{minutes:02d}"
+
+
 # Чтение токена из файла
 def get_token():
     base_dir = Path(__file__).resolve().parent
@@ -325,12 +354,14 @@ async def delete_record_date(update, context):
             elif lunch_minutes:
                 message += f" | 🍽 {lunch_minutes} мин"
             if hours:
-                message += f" | ⏱ {hours:.2f} ч.\n"
+                time_str = float_hours_to_time_str(hours)
+                message += f" | ⏱ {time_str} ч.\n"
                 total_hours += hours
             else:
                 message += " | ⏱ расчет...\n"
 
-        message += f"\n📈 Всего за день: {total_hours:.2f} часов\n\n"
+        total_time_str = float_hours_to_time_str(total_hours)
+        message += f"\n📈 Всего за день: {total_time_str} часов\n\n"
         message += "Вы уверены, что хотите удалить эти записи? (да/нет)"
 
         await update.message.reply_text(message)
@@ -440,13 +471,14 @@ async def calc_lunch_minutes(update, context):
 
         # Вычисляем рабочее время
         total_hours = calculate_work_hours(time_in, time_out, lunch_minutes=lunch_minutes)
+        total_time_str = float_hours_to_time_str(total_hours)
 
         # Формируем сообщение с результатом
         message = f"📊 Результат расчета:\n\n"
         message += f"⏰ Время входа: {time_in}\n"
         message += f"⏰ Время выхода: {time_out}\n"
         message += f"🍽 Обед: {lunch_minutes} минут\n"
-        message += f"⏱ Отработано: {total_hours:.2f} часов"
+        message += f"⏱ Отработано: {total_time_str} часов"
 
         # Очищаем временные данные
         context.user_data.pop('calc_time_in', None)
@@ -688,7 +720,7 @@ async def add_record_time_out(update, context):
 
         await update.message.reply_text(
             'Выберите способ указания обеда:\n'
-            'Или нажмите /cancel для отмены',
+            'Или нажмите /cancel для отменаы',
             reply_markup=reply_markup
         )
         return ADD_RECORD_LUNCH_START
@@ -799,6 +831,8 @@ async def save_complete_record(update, context):
         record_data.get('lunch_minutes')
     )
 
+    total_time_str = float_hours_to_time_str(total_hours)
+
     message = f"✅ Запись успешно добавлена!\n\n"
     message += f"📅 Дата: {datetime.strptime(record_data['date'], '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
     message += f"⏰ Время: {record_data['time_in']} - {record_data['time_out']}\n"
@@ -810,7 +844,7 @@ async def save_complete_record(update, context):
     else:
         message += f"🍽 Обед: не указан\n"
 
-    message += f"⏱ Отработано: {total_hours:.2f} часов"
+    message += f"⏱ Отработано: {total_time_str} часов"
 
     # Очищаем временные данные
     context.user_data.pop('adding_record', None)
@@ -865,17 +899,19 @@ async def generate_report_handler(update, context):
                 for i, record in enumerate(details, 1):
                     time_in, time_out, lunch_start, lunch_end, lunch_minutes, hours = record
                     if time_out and hours is not None:
+                        time_str = float_hours_to_time_str(hours)
                         message += f"{i}. ⏰ {time_in} - {time_out}"
                         if lunch_start and lunch_end:
                             message += f" | 🍽 {lunch_start}-{lunch_end}"
                         elif lunch_minutes:
                             message += f" | 🍽 {lunch_minutes} мин"
-                        message += f" | ⏱ {hours:.2f} ч.\n"
+                        message += f" | ⏱ {time_str} ч.\n"
                         total_day_hours += hours
                     else:
                         message += f"{i}. ⏰ {time_in} - --:-- | ❌ незавершенный вход\n"
 
-                message += f"\n📈 Всего за день: {total_day_hours:.2f} часов"
+                total_day_time_str = float_hours_to_time_str(total_day_hours)
+                message += f"\n📈 Всего за день: {total_day_time_str} часов"
             else:
                 message = "ℹ️ За сегодня нет записей о рабочем времени."
         else:
@@ -884,7 +920,8 @@ async def generate_report_handler(update, context):
                 'month': 'месяц',
                 'year': 'год'
             }
-            message = f'📊 Отработано за {period_names[period]}: {total_hours:.2f} часов'
+            total_time_str = float_hours_to_time_str(total_hours)
+            message = f'📊 Отработано за {period_names[period]}: {total_time_str} часов'
 
         await update.message.reply_text(message, reply_markup=main_keyboard())
     else:
