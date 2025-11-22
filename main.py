@@ -70,18 +70,31 @@ def init_db():
     conn.execute('PRAGMA journal_mode=WAL')
     cursor = conn.cursor()
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            date TEXT,
-            time_in TEXT,
-            time_out TEXT,
-            lunch_start TEXT,
-            lunch_end TEXT,
-            lunch_minutes INTEGER,
-            total_hours REAL
-        )
-    ''')
+                   CREATE TABLE IF NOT EXISTS records
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       user_id
+                       INTEGER,
+                       date
+                       TEXT,
+                       time_in
+                       TEXT,
+                       time_out
+                       TEXT,
+                       lunch_start
+                       TEXT,
+                       lunch_end
+                       TEXT,
+                       lunch_minutes
+                       INTEGER,
+                       total_hours
+                       REAL
+                   )
+                   ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_date ON records (user_id, date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_user ON records (user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_date ON records (date)')
@@ -129,8 +142,23 @@ def calculate_work_hours(time_in, time_out, lunch_start=None, lunch_end=None, lu
 def get_records_by_date(user_id, date):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''SELECT id, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours 
-                   FROM records WHERE user_id=? AND date=? ORDER BY time_in''', (user_id, date))
+    cursor.execute('''SELECT id, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours
+                      FROM records
+                      WHERE user_id = ? AND date =?
+                      ORDER BY time_in''', (user_id, date))
+    records = cursor.fetchall()
+    return records
+
+
+# Получение детализированных записей за период
+def get_detailed_records_period(user_id, start_date, end_date):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''SELECT date, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours
+                      FROM records
+                      WHERE user_id=? AND date BETWEEN ? AND ?
+                      ORDER BY date, time_in''',
+                   (user_id, start_date, end_date))
     records = cursor.fetchall()
     return records
 
@@ -152,9 +180,9 @@ def add_complete_record(user_id, date, time_in, time_out, lunch_start=None, lunc
 
     total_hours = calculate_work_hours(time_in, time_out, lunch_start, lunch_end, lunch_minutes)
 
-    cursor.execute('''INSERT INTO records 
-                   (user_id, date, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+    cursor.execute('''INSERT INTO records
+                      (user_id, date, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                    (user_id, date, time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours))
     conn.commit()
     return total_hours
@@ -191,8 +219,10 @@ def add_time_out(user_id, date, time_out):
         record_id, time_in, lunch_start, lunch_end, lunch_minutes = result
         total_hours = calculate_work_hours(time_in, time_out, lunch_start, lunch_end, lunch_minutes)
 
-        cursor.execute('''UPDATE records SET time_out=?, total_hours=?
-                       WHERE id=?''', (time_out, total_hours, record_id))
+        cursor.execute('''UPDATE records
+                          SET time_out=?,
+                              total_hours=?
+                          WHERE id = ?''', (time_out, total_hours, record_id))
     conn.commit()
 
 
@@ -247,15 +277,17 @@ def generate_report(user_id, period):
 
     if period == 'today':
         current_date = today.strftime('%Y-%m-%d')
-        cursor.execute('''SELECT SUM(total_hours) FROM records 
-                       WHERE user_id=? AND date=?''', (user_id, current_date))
+        cursor.execute('''SELECT SUM(total_hours)
+                          FROM records
+                          WHERE user_id = ? AND date =?''', (user_id, current_date))
     elif period == 'week':
         # Начало недели (понедельник)
         start_of_week = today - timedelta(days=today.weekday())
         # Конец недели (воскресенье)
         end_of_week = start_of_week + timedelta(days=6)
-        cursor.execute('''SELECT SUM(total_hours) FROM records 
-                       WHERE user_id=? AND date BETWEEN ? AND ?''',
+        cursor.execute('''SELECT SUM(total_hours)
+                          FROM records
+                          WHERE user_id = ? AND date BETWEEN ? AND ?''',
                        (user_id, start_of_week.strftime('%Y-%m-%d'), end_of_week.strftime('%Y-%m-%d')))
     elif period == 'month':
         # Начало месяца
@@ -265,13 +297,15 @@ def generate_report(user_id, period):
             end_of_month = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
         else:
             end_of_month = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
-        cursor.execute('''SELECT SUM(total_hours) FROM records 
-                       WHERE user_id=? AND date BETWEEN ? AND ?''',
+        cursor.execute('''SELECT SUM(total_hours)
+                          FROM records
+                          WHERE user_id = ? AND date BETWEEN ? AND ?''',
                        (user_id, start_of_month.strftime('%Y-%m-%d'), end_of_month.strftime('%Y-%m-%d')))
     else:  # year
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        cursor.execute('''SELECT SUM(total_hours) FROM records 
-                       WHERE user_id=? AND date >= ?''', (user_id, start_date))
+        cursor.execute('''SELECT SUM(total_hours)
+                          FROM records
+                          WHERE user_id = ? AND date >= ?''', (user_id, start_date))
 
     result = cursor.fetchone()
     return result[0] or 0
@@ -283,8 +317,10 @@ def get_today_details(user_id):
     cursor = conn.cursor()
     current_date = datetime.now().strftime('%Y-%m-%d')
 
-    cursor.execute('''SELECT time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours FROM records 
-                   WHERE user_id=? AND date=? ORDER BY time_in''', (user_id, current_date))
+    cursor.execute('''SELECT time_in, time_out, lunch_start, lunch_end, lunch_minutes, total_hours
+                      FROM records
+                      WHERE user_id = ? AND date =?
+                      ORDER BY time_in''', (user_id, current_date))
     records = cursor.fetchall()
     return records
 
@@ -864,7 +900,7 @@ async def report_menu(update, context):
     )
 
 
-# Генерация отчета
+# Генерация отчета с детализацией для недели и месяца
 async def generate_report_handler(update, context):
     user_id = update.message.from_user.id
     period_text = update.message.text.lower()
@@ -883,11 +919,12 @@ async def generate_report_handler(update, context):
     if period_text in period_map:
         period = period_map[period_text]
 
-        total_hours = await asyncio.get_event_loop().run_in_executor(
-            None, generate_report, user_id, period
-        )
-
         if period == 'today':
+            # Детализированный отчет за сегодня (существующий функционал)
+            total_hours = await asyncio.get_event_loop().run_in_executor(
+                None, generate_report, user_id, period
+            )
+
             details = await asyncio.get_event_loop().run_in_executor(
                 None, get_today_details, user_id
             )
@@ -914,14 +951,95 @@ async def generate_report_handler(update, context):
                 message += f"\n📈 Всего за день: {total_day_time_str} часов"
             else:
                 message = "ℹ️ За сегодня нет записей о рабочем времени."
-        else:
-            period_names = {
-                'week': 'неделю',
-                'month': 'месяц',
-                'year': 'год'
-            }
+
+        elif period in ['week', 'month']:
+            # Детализированные отчеты за неделю и месяц
+            today = datetime.now().date()
+
+            if period == 'week':
+                start_date = today - timedelta(days=today.weekday())
+                end_date = start_date + timedelta(days=6)
+                period_name = 'неделю'
+            else:  # month
+                start_date = today.replace(day=1)
+                if today.month == 12:
+                    end_date = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+                else:
+                    end_date = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+                period_name = 'месяц'
+
+            # Получаем детализированные записи за период
+            detailed_records = await asyncio.get_event_loop().run_in_executor(
+                None, get_detailed_records_period, user_id,
+                start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
+            )
+
+            # Группируем записи по датам
+            records_by_date = {}
+            for record in detailed_records:
+                date_str, time_in, time_out, lunch_start, lunch_end, lunch_minutes, hours = record
+                if date_str not in records_by_date:
+                    records_by_date[date_str] = []
+                records_by_date[date_str].append({
+                    'time_in': time_in,
+                    'time_out': time_out,
+                    'lunch_start': lunch_start,
+                    'lunch_end': lunch_end,
+                    'lunch_minutes': lunch_minutes,
+                    'hours': hours
+                })
+
+            # Формируем сообщение с детализацией
+            total_period_hours = 0
+            message = f"📊 Детализированный отчет за {period_name} "
+            message += f"(с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}):\n\n"
+
+            # Сортируем даты по возрастанию
+            sorted_dates = sorted(records_by_date.keys())
+
+            for date_str in sorted_dates:
+                date_display = datetime.strptime(date_str, '%Y-%m-%d').strftime('%d.%m.%Y')
+                day_records = records_by_date[date_str]
+                day_total = 0
+
+                message += f"📅 {date_display}:\n"
+
+                for i, record in enumerate(day_records, 1):
+                    time_in = record['time_in']
+                    time_out = record['time_out']
+                    lunch_start = record['lunch_start']
+                    lunch_end = record['lunch_end']
+                    lunch_minutes = record['lunch_minutes']
+                    hours = record['hours']
+
+                    if time_out and hours is not None:
+                        time_str = float_hours_to_time_str(hours)
+                        message += f"  {i}. ⏰ {time_in} - {time_out}"
+                        if lunch_start and lunch_end:
+                            message += f" | 🍽 {lunch_start}-{lunch_end}"
+                        elif lunch_minutes:
+                            message += f" | 🍽 {lunch_minutes} мин"
+                        message += f" | ⏱ {time_str} ч.\n"
+                        day_total += hours
+                    else:
+                        message += f"  {i}. ⏰ {time_in} - --:-- | ❌ незавершенный вход\n"
+
+                if day_total > 0:
+                    day_time_str = float_hours_to_time_str(day_total)
+                    message += f"  📈 Итого за день: {day_time_str} часов\n"
+                    total_period_hours += day_total
+
+                message += "\n"
+
+            total_time_str = float_hours_to_time_str(total_period_hours)
+            message += f"📊 Всего за {period_name}: {total_time_str} часов"
+
+        else:  # year - без детализации
+            total_hours = await asyncio.get_event_loop().run_in_executor(
+                None, generate_report, user_id, period
+            )
             total_time_str = float_hours_to_time_str(total_hours)
-            message = f'📊 Отработано за {period_names[period]}: {total_time_str} часов'
+            message = f'📊 Отработано за год: {total_time_str} часов'
 
         await update.message.reply_text(message, reply_markup=main_keyboard())
     else:
