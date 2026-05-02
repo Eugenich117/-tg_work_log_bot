@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 import sqlite3
+import urllib.request
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
 import asyncio
@@ -26,24 +27,18 @@ logger = logging.getLogger(__name__)
 
 # Функция для преобразования часов в формате float в строку времени (ЧЧ:ММ)
 def float_hours_to_time_str(hours_float):
-    """Преобразует часы в формате float в строку времени ЧЧ:ММ"""
     if hours_float is None:
         return "0:00"
-
     hours = int(hours_float)
     minutes = int(round((hours_float - hours) * 60))
-
-    # Обработка случая, когда минуты достигают 60
     if minutes >= 60:
         hours += 1
         minutes = 0
-
     return f"{hours}:{minutes:02d}"
 
 
 # Функция для преобразования минут в строку времени (ЧЧ:ММ)
 def minutes_to_time_str(total_minutes):
-    """Преобразует минуты в строку времени ЧЧ:ММ"""
     if total_minutes is None:
         return "0:00"
     hours = total_minutes // 60
@@ -136,27 +131,52 @@ def set_weekly_norm(user_id, norm_hours):
     conn.commit()
 
 
-def get_working_days_in_month(year, month):
-    """Подсчитать количество рабочих дней (пн-пт) в заданном месяце, без учёта праздников."""
+def _working_days_fallback(year, month):
+    """Fallback: считаем рабочие дни как пн-пт, без праздников."""
+    first_day = datetime(year, month, 1).date()
     if month == 12:
-        first_day = datetime(year, month, 1).date()
         last_day = datetime(year + 1, 1, 1).date() - timedelta(days=1)
     else:
-        first_day = datetime(year, month, 1).date()
         last_day = datetime(year, month + 1, 1).date() - timedelta(days=1)
-    count = 0
-    current = first_day
-    while current <= last_day:
-        if current.weekday() < 5:  # 0=пн, 4=пт
-            count += 1
-        current += timedelta(days=1)
-    return count
+    return sum(1 for d in range((last_day - first_day).days + 1)
+               if (first_day + timedelta(days=d)).weekday() < 5)
 
 
-def calc_monthly_norm_from_weekly(weekly_norm, year, month):
-    """Рассчитать месячную норму: недельная_норма / 5 * рабочих_дней_в_месяце."""
-    working_days = get_working_days_in_month(year, month)
-    return round(weekly_norm / 5 * working_days, 2)
+async def get_working_days_in_month(year, month):
+    """Получить кол-во рабочих дней через isdayoff.ru (производственный календарь РФ).
+    При недоступности API — fallback на подсчёт пн-пт без праздников."""
+    def fetch_from_api():
+        import ssl
+        url = f'https://isdayoff.ru/api/getdata?year={year}&month={month:02d}'
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
+                data = resp.read().decode().strip()
+            logger.info(f'isdayoff.ru ответил для {year}-{month:02d}: "{data}"')
+            if data and all(c in '01' for c in data):
+                return data.count('0')
+            else:
+                logger.warning(f'isdayoff.ru вернул неожиданный ответ: "{data}"')
+        except Exception as e:
+            logger.warning(f'isdayoff.ru ошибка запроса: {type(e).__name__}: {e}')
+        return None
+
+    result = await asyncio.get_event_loop().run_in_executor(None, fetch_from_api)
+    if result is not None:
+        logger.info(f'Рабочих дней в {year}-{month:02d} по производственному календарю: {result}')
+        return result
+
+    logger.warning(f'Используем fallback (пн-пт) для {year}-{month:02d}')
+    return _working_days_fallback(year, month)
+
+
+async def calc_monthly_norm_from_weekly(weekly_norm, year, month):
+    """Рассчитать месячную норму: недельная_норма / 5 * рабочих_дней_в_месяце.
+    Возвращает (норма_часов, кол-во_рабочих_дней)."""
+    working_days = await get_working_days_in_month(year, month)
+    return round(weekly_norm / 5 * working_days, 2), working_days
 
 
 # Расчет рабочих часов с учетом обеда (только если >4 часов)
@@ -333,9 +353,10 @@ async def set_norm_start(update, context):
     current_norm = await asyncio.get_event_loop().run_in_executor(None, get_weekly_norm, user_id)
     if current_norm:
         today = datetime.now()
-        monthly = calc_monthly_norm_from_weekly(current_norm, today.year, today.month)
+        monthly, working_days = await calc_monthly_norm_from_weekly(current_norm, today.year, today.month)
         norm_info = (f"Текущая недельная норма: {float_hours_to_time_str(current_norm)} ч.\n"
-                     f"Месячная норма на {today.strftime('%B %Y')}: {float_hours_to_time_str(monthly)} ч.\n\n")
+                     f"\U0001f4c5 Рабочих дней в {today.strftime('%B %Y')}: {working_days}\n"
+                     f"\U0001f3af Месячная норма: {float_hours_to_time_str(monthly)} ч.\n\n")
     else:
         norm_info = ""
     await update.message.reply_text(
@@ -355,8 +376,7 @@ async def set_norm_save(update, context):
             raise ValueError("Норма должна быть положительной")
         await asyncio.get_event_loop().run_in_executor(None, set_weekly_norm, user_id, norm)
         today = datetime.now()
-        monthly = calc_monthly_norm_from_weekly(norm, today.year, today.month)
-        working_days = get_working_days_in_month(today.year, today.month)
+        monthly, working_days = await calc_monthly_norm_from_weekly(norm, today.year, today.month)
         await update.message.reply_text(
             f'✅ Недельная норма установлена: {float_hours_to_time_str(norm)} ч.\n'
             f'📅 Рабочих дней в {today.strftime("%B")}: {working_days}\n'
@@ -849,8 +869,7 @@ async def generate_report_handler(update, context):
         if period == 'month':
             weekly_norm = await asyncio.get_event_loop().run_in_executor(None, get_weekly_norm, user_id)
             if weekly_norm:
-                working_days = get_working_days_in_month(today.year, today.month)
-                monthly_norm = calc_monthly_norm_from_weekly(weekly_norm, today.year, today.month)
+                monthly_norm, working_days = await calc_monthly_norm_from_weekly(weekly_norm, today.year, today.month)
                 delta = total_period_hours - monthly_norm
                 delta_str = float_hours_to_time_str(abs(delta))
                 message += (f"\n\n🎯 Норма за месяц: {float_hours_to_time_str(monthly_norm)} ч."
@@ -868,7 +887,7 @@ async def generate_report_handler(update, context):
 
     await update.message.reply_text(message, reply_markup=main_keyboard())
 
-# Обработчик кнопки "Назад" в меню обеда
+
 async def lunch_back(update, context):
     await update.message.reply_text('Главное меню', reply_markup=main_keyboard())
 
@@ -879,12 +898,10 @@ async def cancel(update, context):
     context.user_data.pop('delete_date_display', None)
     context.user_data.pop('calc_time_in', None)
     context.user_data.pop('calc_time_out', None)
-
     await update.message.reply_text('Операция отменена', reply_markup=main_keyboard())
     return ConversationHandler.END
 
 
-# Закрытие соединения с БД при завершении
 def close_db_connection():
     global _db_connection
     if _db_connection:
@@ -920,7 +937,6 @@ def main():
         allow_reentry=True
     )
 
-    # ConversationHandler для расчета рабочего времени
     calc_worktime_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('^Расчет рабочего времени$'), worktime_calculation)],
         states={
@@ -932,7 +948,6 @@ def main():
         allow_reentry=True
     )
 
-    # ConversationHandler для добавления полной записи
     add_record_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('^Добавить запись$'), add_record)],
         states={
@@ -950,7 +965,6 @@ def main():
         allow_reentry=True
     )
 
-    # ConversationHandler для обеда
     lunch_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^Начало обеда$'), lunch_start),
@@ -965,7 +979,6 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    # ConversationHandler для входа/выхода
     time_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^Вход$'), time_in),
@@ -985,7 +998,6 @@ def main():
     application.add_handler(lunch_conv_handler)
     application.add_handler(time_conv_handler)
 
-    # Затем общие обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.Regex('^Обед$'), lunch))
     application.add_handler(MessageHandler(filters.Regex('^Назад$'), lunch_back))
