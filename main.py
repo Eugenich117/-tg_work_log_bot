@@ -865,10 +865,18 @@ async def generate_report_handler(update, context):
         total_time_str = float_hours_to_time_str(total_period_hours)
         message += f"📊 Всего за {period_name}: {total_time_str} часов"
 
-        # ---- НОРМА: только для месячного отчёта ----
-        if period == 'month':
-            weekly_norm = await asyncio.get_event_loop().run_in_executor(None, get_weekly_norm, user_id)
-            if weekly_norm:
+        # ---- НОРМА: для недели и месяца ----
+        weekly_norm = await asyncio.get_event_loop().run_in_executor(None, get_weekly_norm, user_id)
+        if weekly_norm:
+            if period == 'week':
+                delta = total_period_hours - weekly_norm
+                delta_str = float_hours_to_time_str(abs(delta))
+                message += f"\n\n🎯 Норма за неделю: {float_hours_to_time_str(weekly_norm)} ч."
+                if delta >= 0:
+                    message += f"\n✅ Переработка: +{delta_str} ч."
+                else:
+                    message += f"\n⏳ Осталось отработать: {delta_str} ч."
+            elif period == 'month':
                 monthly_norm, working_days = await calc_monthly_norm_from_weekly(weekly_norm, today.year, today.month)
                 delta = total_period_hours - monthly_norm
                 delta_str = float_hours_to_time_str(abs(delta))
@@ -878,8 +886,8 @@ async def generate_report_handler(update, context):
                     message += f"\n✅ Переработка: +{delta_str} ч."
                 else:
                     message += f"\n⏳ Осталось отработать: {delta_str} ч."
-            else:
-                message += f"\n\nℹ️ Норма не задана. Установите её кнопкой «⚙️ Норма часов»."
+        else:
+            message += f"\n\nℹ️ Норма не задана. Установите её кнопкой «⚙️ Норма часов»."
 
     else:  # year
         total_hours = await asyncio.get_event_loop().run_in_executor(None, generate_report, user_id, period)
